@@ -1,0 +1,10 @@
+#/!bin/bash
+# Compile aorsaconv
+
+NETCDF_DIREC="/apps/NETCDF/4.4.1.1/INTEL/IMPI/"
+LIBNETCDF="libnetcdff.so"
+NETCDF_INC=$NETCDF_DIREC/include
+NETCDF_LIB=$NETCDF_DIREC/lib/$LIBNETCDF
+
+ifort -O2 src/aorsaconv.f90 -o aorsaconv -I$NETCDF_INC $NETCDF_LIB
+# ifort -g -traceback -debug all -check all -warn all src/aorsaconv.f90 -o aorsaconv -I$NETCDF_INC $NETCDF_LIB

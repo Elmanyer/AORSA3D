@@ -1,0 +1,8 @@
+aorsa3d
+xaorsa3d.mn
+aorsaconv
+transformconv
+*.ipynb_checkpoints/
+*__pycache__/
+*plots/
+*.mod

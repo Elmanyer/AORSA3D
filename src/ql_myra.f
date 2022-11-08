@@ -1,0 +1,1119 @@
+      module ql_myra_mod
+      use qlsum_myra_mod
+      include 'mpif.h'
+      contains
+
+!
+!***************************************************************************
+!
+
+      subroutine ql_myra_write(bqlavg, cqlavg, eqlavg, fqlavg,
+     .   wdot_inout, fx0_inout, fy0_inout, fz0_inout,
+     .   vol, nrhodim, nnoderho, drho, dx, dy, dphi,
+     .   nxdim, nydim, nphidim, nnodex, nnodey, nnodephi,
+     .   nkx1, nkx2, nky1, nky2, nphi1, nphi2, nkdim1, nkdim2,
+     .   mkdim1, mkdim2, nphidim1, nphidim2,
+     .   xm, q, xkt, omgc, omgp2, lmax,
+     .   xkxsav, xkysav, xkzsav,
+     .   exk, eyk, ezk, capr,
+     .   uxx, uxy, uxz,
+     .   uyx, uyy, uyz,
+     .   uzx, uzy, uzz,
+     .   icontxt,
+     .   xx, yy, zz, psi, psilim, nboundary,
+     .   myid, nproc, gradprlb, bmod, ndist, bmod_mid,
+     .   nupar, nuper, n_psi,
+     .   n_psi_dim, dfduper, dfdupar,
+     .   UminPara_cql, UmaxPara_cql, UPERP_cql, UPARA_cql, UPERP, UPARA,
+     .   vc_mks_cql, df_cql_uprp, df_cql_uprl, rho, rho_a,
+     .   rt, omgrf,
+     .   lmaxdim, nzeta_wdot,
+     .   dldbavg,
+     .   upshift, i_write, xkx_cutoff, xky_cutoff, xkz_cutoff)
+
+*----------------------------------------------------------------------
+*     This subroutine calculates wdot and the quasi-linear operator for
+*     a single species
+*----------------------------------------------------------------------
+
+      implicit none
+
+      integer splitrank, nloops, partition, start, finish
+      integer status(MPI_STATUS_SIZE), ierr
+      integer remainder
+      real, allocatable :: bql_store(:,:,:)
+      real, allocatable :: cql_store(:,:,:)
+      real, allocatable :: eql_store(:,:,:)
+      real, allocatable :: fql_store(:,:,:)
+      logical iam_root
+      integer left_neighbor, right_neighbor
+      real token
+      real upara_test
+      integer mi_max, mi_min
+
+      real u2, fnorm, f_cql
+
+      real, dimension(:,:), allocatable :: DFDUPER0, DFDUPAR0
+
+      integer upshift
+      integer i_write
+
+      integer nproc, myid, ndist, lmaxdim
+      integer  i, j, k, n, lmax
+      integer icontxt, nboundary, nzeta_wdot
+      integer nxdim, nydim, nphidim, nnodex, nnodey, nnodephi,
+     .   nrhodim, nnoderho,
+     .   nkx1, nkx2, nky1, nky2, nphi1, nphi2, nkdim1, nkdim2,
+     .   mkdim1, mkdim2, nphidim1, nphidim2
+      integer ni0, mi0
+
+      real uperp0_grid, upara0_grid, zeta, eta, ai, bi, ci, di
+      real dfduper0_intplt, dfdupar0_intplt,
+     .     xkx_cutoff, xky_cutoff, xkz_cutoff
+
+      real uperp0, factor
+      real upara0, upara_mi, duperp, dupara
+
+      real rt, omgrf, xkphi
+      real argd, drho, bratio
+
+
+      real xm, omgc(nxdim, nydim, nphidim),
+     .     omgp2(nxdim, nydim, nphidim),
+     .     psi(nxdim, nydim, nphidim), psilim, alpha
+      real capr(nxdim),
+     .     dx, dy, dphi
+      real gradprlb(nxdim, nydim, nphidim), bmod(nxdim, nydim, nphidim),
+     .     bmod_mid(nxdim, nydim, nphidim)
+
+      complex xx(nkdim1 : nkdim2, 1 : nxdim),
+     .        yy(mkdim1 : mkdim2, 1 : nydim),
+     .        zz(nphidim1 : nphidim2, 1 : nphidim)
+
+      complex wdoti, fx0i, fy0i
+
+
+      real bqlavg(nuper, nupar, nnoderho)
+      real cqlavg(nuper, nupar, nnoderho)
+      real eqlavg(nuper, nupar, nnoderho)
+      real fqlavg(nuper, nupar, nnoderho)
+
+      real wdot_inout(nxdim, nydim, nphidim)
+      real  fx0_inout(nxdim, nydim, nphidim)
+      real  fy0_inout(nxdim, nydim, nphidim)
+      real  fz0_inout(nxdim, nydim, nphidim)
+
+      real wdot(nnodex, nnodey, nnodephi)
+      real fx0(nnodex, nnodey, nnodephi)
+      real fy0(nnodex, nnodey, nnodephi)
+      real fz0(nnodex, nnodey, nnodephi)
+
+
+      real vol(nrhodim), dldbavg(nrhodim)
+
+
+      complex exk(nkdim1 : nkdim2, mkdim1 : mkdim2, nphidim1 :nphidim2),
+     1        eyk(nkdim1 : nkdim2, mkdim1 : mkdim2, nphidim1 :nphidim2),
+     1        ezk(nkdim1 : nkdim2, mkdim1 : mkdim2, nphidim1 :nphidim2)
+
+      real xkxsav(nkdim1 : nkdim2), xkysav(mkdim1 : mkdim2),
+     .     xkzsav(nphidim1 : nphidim2)
+      real q, xkt(nxdim, nydim, nphidim)
+
+      real uxx(nxdim, nydim, nphidim),
+     .     uxy(nxdim, nydim, nphidim),
+     .     uxz(nxdim, nydim, nphidim),
+     .     uyx(nxdim, nydim, nphidim),
+     .     uyy(nxdim, nydim, nphidim),
+     .     uyz(nxdim, nydim, nphidim),
+     .     uzx(nxdim, nydim, nphidim),
+     .     uzy(nxdim, nydim, nphidim),
+     .     uzz(nxdim, nydim, nphidim)
+
+      real rho(nxdim, nydim, nphidim)
+
+      integer :: n_psi_dim, nuper, nupar, n_psi, mi, ni
+
+      real :: UPERP(NUPER), UPARA(NUPAR)
+      real :: UPERP_cql(NUPER), UPARA_cql(NUPAR)
+      real :: DFDUPER(NUPER,NUPAR),DFDUPAR(NUPER,NUPAR)
+
+      real bql, cql, eql, fql
+
+      complex, dimension(:),  allocatable :: b_sum
+      complex, dimension(:),  allocatable :: c_sum
+      complex, dimension(:),  allocatable :: e_sum
+      complex, dimension(:),  allocatable :: f_sum
+
+      complex, dimension(:),  allocatable :: wdot_sum
+      complex, dimension(:),  allocatable :: sum_fx0
+      complex, dimension(:),  allocatable :: sum_fy0
+
+      real, dimension(:,:,:), allocatable :: bqlvol
+      real, dimension(:,:), allocatable :: bqlvol2d
+
+      real, dimension(:,:,:), allocatable :: cqlvol
+      real, dimension(:,:), allocatable :: cqlvol2d
+
+      real, dimension(:,:,:), allocatable :: eqlvol
+      real, dimension(:,:), allocatable :: eqlvol2d
+
+      real, dimension(:,:,:), allocatable :: fqlvol
+      real, dimension(:,:), allocatable :: fqlvol2d
+
+      real :: W, ENORM, ZSPEC, ASPEC, BMAG
+      real :: UminPara,UmaxPara
+      real :: UminPara_cql,UmaxPara_cql
+      real :: df_cql_uprp(NUPER, NUPAR, n_psi_dim)
+      real :: df_cql_uprl(NUPER, NUPAR, n_psi_dim)
+      real :: vc_mks, vc_mks_cql, rho_a(n_psi_dim)
+      real :: eps0, pi, emax, u0, u_0, u_, costh, costh0, psic
+      real, dimension(:,:,:), allocatable :: vc
+
+      parameter (eps0 = 8.85e-12)
+      parameter (PI = 3.141592653597932384)
+
+
+      integer :: nwork, ip
+      logical :: has_work
+      integer, dimension(nnodex*nnodey*nnodephi) :: i_table, j_table,
+     .     k_table
+
+      allocate( dfduper0(nuper, nupar) )
+      allocate( dfdupar0(nuper, nupar) )
+
+      allocate(b_sum(NUPAR) )
+      allocate(c_sum(NUPAR) )
+      allocate(e_sum(NUPAR) )
+      allocate(f_sum(NUPAR) )
+
+      allocate(wdot_sum(NUPER) )
+      allocate(sum_fx0(NUPER) )
+      allocate(sum_fy0(NUPER) )
+
+      allocate(bqlvol(nuper, nupar, nnoderho) )
+      allocate(bqlvol2d(nuper, nupar) )
+
+      allocate(cqlvol(nuper, nupar, nnoderho) )
+      allocate(cqlvol2d(nuper, nupar) )
+
+      allocate(eqlvol(nuper, nupar, nnoderho) )
+      allocate(eqlvol2d(nuper, nupar) )
+
+      allocate(fqlvol(nuper, nupar, nnoderho) )
+      allocate(fqlvol2d(nuper, nupar) )
+
+!     -------------------------------------
+!efd  initialize allocatable arrays to zero
+!     -------------------------------------
+      wdot = 0.0
+      fx0 = 0.0
+      fy0 = 0.0
+      fz0 = 0.0
+
+      b_sum = 0.0
+      c_sum = 0.0
+      e_sum = 0.0
+      f_sum = 0.0
+
+      wdot_sum = 0.0
+      sum_fx0 = 0.0
+      sum_fy0 = 0.0
+
+      bqlvol = 0.0
+      bqlvol2d = 0.0
+
+      cqlvol = 0.0
+      cqlvol2d = 0.0
+
+      eqlvol = 0.0
+      eqlvol2d = 0.0
+
+      fqlvol = 0.0
+      fqlvol2d = 0.0
+
+
+
+
+      W = omgrf
+      ZSPEC = q / 1.6e-19
+
+      if(ndist .eq. 0)then   !--Maxwellian--!
+
+         do ni = 1, NUPER
+            UPERP(ni) = (real(ni-1)/real(NUPER-1))
+         end do
+
+         UminPara = -1.0
+         UmaxPara =  1.0
+
+         do mi = 1, NUPAR
+            UPARA(mi) = (-1.0 + 2. * (real(mi-1) / real(NUPAR-1)))
+         end do
+
+      else   !--non-Maxwellian--!
+
+            vc_mks = vc_mks_cql
+            UminPara = UminPara_cql
+            UmaxPara = UmaxPara_cql
+
+            do ni = 1, nuper
+               uperp(ni) = uperp_cql(ni)
+            end do
+
+            do mi = 1, nupar
+               upara(mi) = upara_cql(mi)
+            end do
+
+      end if
+
+
+      do n = 1, nnoderho
+
+         do mi = 1, nupar
+            do ni = 1, nuper
+
+
+               bqlvol(ni, mi, n) = 0.0
+               cqlvol(ni, mi, n) = 0.0
+               eqlvol(ni, mi, n) = 0.0
+               fqlvol(ni, mi, n) = 0.0
+
+
+               bqlavg(ni, mi, n) = 0.0
+               cqlavg(ni, mi, n) = 0.0
+               eqlavg(ni, mi, n) = 0.0
+               fqlavg(ni, mi, n) = 0.0
+
+            end do
+         end do
+      end do
+
+
+
+      nwork = 0
+      do k=1,nnodephi
+      do j=1,nnodey
+         do i=1,nnodex
+           has_work = (psi(i,j,k) .le. psilim .and. nboundary .eq. 1
+     .                                        .or. nboundary .eq. 0)
+           if (has_work) then
+              nwork = nwork + 1
+              i_table(nwork) = i
+              j_table(nwork) = j
+              k_table(nwork) = k
+           endif
+         enddo
+      enddo
+      enddo
+
+
+*     -----------------------
+*     Loop over spatial mesh:
+*     -----------------------
+
+      nloops = nwork
+      partition=int(nloops/nproc)
+      remainder=mod(nloops,nproc)
+      splitrank=nproc-remainder
+      if(myid.lt.splitrank)then
+         start=1+myid*partition
+         finish=start+partition-1
+      else
+         start=1+myid*partition+myid-splitrank
+         finish=start+partition
+      endif
+
+      if(i_write.ne.0) then
+             allocate(bql_store(start:finish,1:nuper,1:nupar),
+     .         cql_store(start:finish,1:nuper,1:nupar),
+     .         eql_store(start:finish,1:nuper,1:nupar),
+     .         fql_store(start:finish,1:nuper,1:nupar))
+             allocate(vc(nnodex, nnodey, nnodephi))
+      else
+      endif
+
+
+      do ip = start,finish
+
+            i = i_table(ip)
+            j = j_table(ip)
+            k = k_table(ip)
+
+            alpha = sqrt(2.0 * xkt(i, j, k) / xm)
+            n = int(rho(i,j,k) / drho) + 1
+
+            if (ndist .eq. 0) then
+	       vc_mks =  3.0 * alpha    !--Maxwellian only--!
+	       vc_mks_cql = vc_mks
+	       UminPara_cql = -1.0
+	       UmaxPara_cql = 1.0
+	    end if
+
+            u0 = vc_mks / alpha
+
+            Emax = 0.5 * xm * vc_mks**2
+            Enorm = Emax / 1.6e-19
+            ASPEC = xm / 1.67e-27
+            BMAG = omgc(i,j,k) * (xm / q)
+
+	    bratio = bmod_mid(i,j,k) / bmod(i,j,k)
+	    if (bratio .gt. 1.0) bratio = 1.0
+
+	    duperp = (uperp(nuper) - uperp(1)) / (nuper - 1)
+            dupara = (upara(nupar) - upara(1)) / (nupar - 1)
+
+	    psic = 1.0 / bratio
+
+!           -----------------------------------------------------
+!           get CQL3D distribution function on the midplane:
+!           used for Wdot only - not the quasilinear coefficients
+!           -----------------------------------------------------
+
+            if(ndist .eq. 0)then   !--Maxwellian--!
+
+	       call maxwell_dist(u0, NUPAR, NUPER,
+     .              UminPara, UmaxPara,
+     .              UPERP, UPARA, DFDUPER, DFDUPAR)
+
+            else   !--non-Maxwellian--!
+
+               call cql3d_dist(nupar, nuper, n_psi,
+     .              n_psi_dim, rho_a, rho(i,j,k),
+     .              UminPara,UmaxPara,
+     .              df_cql_uprp, df_cql_uprl,
+     .              UPERP, UPARA, DFDUPER0, DFDUPAR0)
+
+!              ---------------------------------------------------------
+!              map CQL3D distribution function off the midplane for Wdot
+!              ---------------------------------------------------------
+               if(bratio .gt. 0.0)then
+
+	          dfduper = 0.0
+	          dfdupar = 0.0
+
+                  do ni = 1, nuper
+                     do mi = 1, nupar
+
+                        argd =  uperp(ni)**2 * (1. - bratio)
+     .     			                         + upara(mi)**2
+                        if (argd .le. 0.0) argd = 1.0e-06
+
+		        uperp0 = uperp(ni) * sqrt(bratio)
+                        upara0  = sign(1.0, upara(mi)) * sqrt(argd)
+
+		        dfduper(ni, mi) = 0.0
+                        dfdupar(ni, mi) = 0.0
+
+		        if(upara0 .ge. upara(1) .and.
+     .                                   upara0 .le. upara(nupar)) then
+
+     		           ni0 = int((uperp0 - uperp(1)) / duperp) + 1
+			   mi0 = int((upara0 - upara(1)) / dupara) + 1
+
+			   dfduper0_intplt = dfduper0(ni0, mi0)
+			   dfdupar0_intplt = dfdupar0(ni0, mi0)
+
+		           if (ni0 .lt. nuper .and. mi0 .lt. nupar) then
+
+                           uperp0_grid = uperp(1) + (ni0 - 1) * duperp
+			   upara0_grid = upara(1) + (mi0 - 1) * dupara
+
+			   zeta = (uperp0 - uperp0_grid) / duperp
+			   eta  = (upara0 - upara0_grid) / dupara
+
+                           ai = dfduper0(ni0, mi0)
+                           bi = dfduper0(ni0+1,mi0) - dfduper0(ni0,mi0)
+                           ci = dfduper0(ni0,mi0+1) - dfduper0(ni0,mi0)
+                           di = dfduper0(ni0+1,mi0+1)+ dfduper0(ni0,mi0)
+     .                        - dfduper0(ni0+1,mi0)- dfduper0(ni0,mi0+1)
+
+			   dfduper0_intplt = ai + bi * zeta
+     .                                     + ci * eta + di * zeta * eta
+
+                           ai = dfdupar0(ni0, mi0)
+                           bi = dfdupar0(ni0+1,mi0) - dfdupar0(ni0,mi0)
+                           ci = dfdupar0(ni0,mi0+1) - dfdupar0(ni0,mi0)
+                           di = dfdupar0(ni0+1,mi0+1)+ dfdupar0(ni0,mi0)
+     .                        - dfdupar0(ni0+1,mi0)- dfdupar0(ni0,mi0+1)
+
+			   dfdupar0_intplt = ai + bi * zeta
+     .                                     + ci * eta + di * zeta * eta
+
+                           end if
+
+
+			   if (upara0 .ne. 0.0)then
+
+			      dfdupar(ni, mi) = dfdupar0_intplt *
+     .                           upara(mi) / upara0
+
+                              dfduper(ni, mi) = dfduper0_intplt *
+     .                           sqrt(bratio) + dfdupar0_intplt *
+     .                           uperp(ni) / upara0 * (1.0 - bratio)
+
+
+                           end if
+
+			end if
+
+
+		        go to 5000
+!                       ----------------------------
+!                       optional analytic Maxwellian
+!                       ----------------------------
+
+			alpha = sqrt(2.0 * xkt(i, j, k) / xm)
+!                        vc_mks = 3.5 * alpha
+                        u0 = vc_mks / alpha
+
+	                fnorm = u0**3 / pi**1.5
+
+		        u2 = uperp(ni)**2 + upara(mi)**2
+
+                        f_cql = exp(-u2 * u0**2) * fnorm
+	                dfduper(ni, mi) = -f_cql * 2.* uperp(ni) * u0**2
+                        dfdupar(ni, mi) = -f_cql * 2.* upara(mi) * u0**2
+ 5000                   continue
+
+
+                     end do
+                  end do
+               end if
+            end if
+
+!           ----------------------------------
+!           Loop over perpendicular velocities
+!           ----------------------------------
+
+            do ni = 1, nuper
+
+	    if (ndist .eq. 0)
+     .          call QLSUM_MAXWELLIAN(ni, b_sum, c_sum, e_sum, f_sum,
+     .               wdot_sum(ni), sum_fx0(ni), sum_fy0(ni), W, ZSPEC,
+     .               ASPEC, BMAG, lmax, ENORM, UminPara, UmaxPara,
+     .               NUPAR, NUPER, UPERP, UPARA, DFDUPER, DFDUPAR,
+     .               exk, eyk, ezk, nkdim1, nkdim2, mkdim1, mkdim2,
+     .               nphidim1, nphidim2,
+     .               nkx1, nkx2, nky1, nky2, nphi1, nphi2,
+     .               uxx(i,j,k), uxy(i,j,k), uxz(i,j,k),
+     .               uyx(i,j,k), uyy(i,j,k), uyz(i,j,k),
+     .               uzx(i,j,k), uzy(i,j,k), uzz(i,j,k),
+     .               nxdim, nydim, nphidim, xkxsav, xkysav, xkzsav,
+     .               capr(i), xx, yy, zz, i, j, k,
+     .               lmaxdim, ndist, nzeta_wdot,
+     .               gradprlb(i,j,k), bmod(i,j,k), omgc(i,j,k),
+     .               alpha, xm,
+     .               upshift, xkx_cutoff, xky_cutoff, xkz_cutoff, rt)
+
+	    if (ndist .eq. 1)
+     .         call QLSUM_NON_MAXWELLIAN(ni, b_sum, c_sum, e_sum, f_sum,
+     .               wdot_sum(ni), sum_fx0(ni), sum_fy0(ni), W, ZSPEC,
+     .               ASPEC, BMAG, lmax, ENORM, UminPara, UmaxPara,
+     .               NUPAR, NUPER, UPERP, UPARA, DFDUPER, DFDUPAR,
+     .               exk, eyk, ezk, nkdim1, nkdim2, mkdim1, mkdim2,
+     .               nphidim1, nphidim2,
+     .               nkx1, nkx2, nky1, nky2, nphi1, nphi2,
+     .               uxx(i,j,k), uxy(i,j,k), uxz(i,j,k),
+     .               uyx(i,j,k), uyy(i,j,k), uyz(i,j,k),
+     .               uzx(i,j,k), uzy(i,j,k), uzz(i,j,k),
+     .               nxdim, nydim, nphidim, xkxsav, xkysav, xkzsav,
+     .               capr(i), xx, yy, zz, i, j, k,
+     .               lmaxdim, ndist, nzeta_wdot,
+     .               gradprlb(i,j,k), bmod(i,j,k), omgc(i,j,k),
+     .               alpha, xm,
+     .               upshift, xkx_cutoff, xky_cutoff, xkz_cutoff, rt)
+
+
+!              -----------------------------
+!              Loop over parallel velocities
+!              -----------------------------
+
+               upara_test = sqrt(1.0 - (UPERP(ni))**2)
+	       mi_max = ceiling(upara_test*(nupar-1)/2 + (nupar+1)/2)
+	       mi_min = floor(-1.0*upara_test*(nupar-1)/2
+     .                        + (nupar+1)/2)
+
+               do mi = 1, nupar
+
+	          bql = 0.0
+                  cql = 0.0
+                  eql = 0.0
+                  fql = 0.0
+
+	          if(mi.ge.mi_min .and. mi.le.mi_max)then
+
+                  bql = 1.0 / (8. * emax * dupara)
+     .                  * eps0 * omgp2(i,j,k) / omgrf * real(b_sum(mi))
+
+                  cql = 1.0 / (8. * emax * dupara)
+     .                  * eps0 * omgp2(i,j,k) / omgrf * real(c_sum(mi))
+
+                  eql = 1.0 / (8. * emax * dupara)
+     .                  * eps0 * omgp2(i,j,k) / omgrf * real(e_sum(mi))
+
+                  fql = 1.0 / (8. * emax * dupara)
+     .                  * eps0 * omgp2(i,j,k) / omgrf * real(f_sum(mi))
+
+
+
+!                  if(bql .ne. 0.0)count(myid, 1) = count(myid, 1) + 1.0
+
+
+                  if(n .le. nnoderho)then
+
+*                    ----------------------
+*                    calculate midplane u's
+*                    ----------------------
+                     argd = uperp(ni)**2 * (1.-bratio) + upara(mi)**2
+                     if (argd .le. 0.0) argd = 1.0e-06
+
+                     uperp0 = uperp(ni) * sqrt(bratio)
+                     upara0 = sign(1.0, upara(mi)) * sqrt(argd)
+
+                     u_  = sqrt(uperp(ni)**2 + upara(mi)**2)
+                     if (u_  .eq. 0.0) u_  = 1.0e-08
+                     u_0 = u_
+
+
+                     ni0 = int((uperp0 - uperp(1)) / duperp) + 1
+                     mi0 = int((upara0 - upara(1)) / dupara) + 1
+
+*                    --------------------------------------
+*                    bounce average and map to midplane u's
+*                    --------------------------------------
+                     if(ni0 .ge. 1 .and. ni0 .le. nuper .and.
+     .                     mi0 .ge. 1 .and. mi0 .le. nupar)then
+
+
+
+     			costh0 = upara0 / u_0
+			costh = upara(mi) / u_
+
+			if(costh0 .eq. 0.0)costh0 = 1.0e-08
+
+			upara_mi = upara(mi)
+			if(upara_mi .eq. 0.0)
+     .                        upara_mi = (upara(mi) + upara(mi+1)) / 2.0
+
+
+                        factor = 1.0
+
+                        bqlvol(ni0, mi0, n) = bqlvol(ni0, mi0, n)
+     .                      + dx * dy * dphi * capr(i) * bql * factor
+
+                        cqlvol(ni0, mi0, n) = cqlvol(ni0, mi0, n)
+     .                      + dx * dy * dphi * capr(i) * cql * factor
+     .                      * costh / costh0 / sqrt(psic)
+
+                        eqlvol(ni0, mi0, n) = eqlvol(ni0, mi0, n)
+     .                      + dx * dy * dphi * capr(i) * eql * factor
+     .                      * costh / costh0 / psic
+
+                        fqlvol(ni0, mi0, n) = fqlvol(ni0, mi0, n)
+     .                      + dx * dy * dphi * capr(i) * fql * factor
+     .                      * (costh / costh0)**2 / psic**1.5
+
+                     end if
+
+
+
+		  end if
+
+                  else
+                  endif
+
+                  if(i_write.ne.0)then
+
+                    bql_store(ip,ni,mi) = bql
+	    	    cql_store(ip,ni,mi) = cql
+		    eql_store(ip,ni,mi) = eql
+		    fql_store(ip,ni,mi) = fql
+		  endif
+
+
+               end do
+
+            end do
+
+
+	    wdoti = 0.0
+	    fx0i = 0.0
+	    fy0i = 0.0
+
+*           --------------------------------------------
+*           integrate wdot over perpendicular velocities
+*           --------------------------------------------
+
+	    do ni = 2, nuper - 1
+	       wdoti = wdoti + wdot_sum(ni) * duperp
+	       fx0i = fx0i + sum_fx0(ni) * duperp
+	       fy0i = fy0i + sum_fy0(ni) * duperp
+	    end do
+
+
+	    wdoti = wdoti + 0.5 * wdot_sum(1)     * duperp
+     .                    + 0.5 * wdot_sum(nuper) * duperp
+
+	    fx0i = fx0i + 0.5 * sum_fx0(1)     * duperp
+     .                  + 0.5 * sum_fx0(nuper) * duperp
+
+	    fy0i = fy0i + 0.5 * sum_fy0(1)     * duperp
+     .                  + 0.5 * sum_fy0(nuper) * duperp
+
+
+
+            wdot(i,j,k) = - pi / 2.0 * eps0 * omgp2(i,j,k)
+     .                                     / omgrf * real(wdoti)
+
+            fx0(i,j,k)  = - pi / 2.0 * eps0 * omgp2(i,j,k)
+     .                      / omgrf * real(fx0i) / (2.0 * omgrf)
+            fy0(i,j,k)  = - pi / 2.0 * eps0 * omgp2(i,j,k)
+     .                       / omgrf * real(fy0i)/ (2.0 * omgrf)
+
+            xkphi = xkzsav(nphi1) / capr(i)
+            fz0(i,j,k)  = xkphi / omgrf * wdot(i,j,k)
+
+
+!     --------------------------------
+!     end loop over i,j,k spatial points
+!     --------------------------------
+      end do
+
+
+      if(ndist.eq.1 .and. i_write .ne. 0)then
+
+         iam_root = (myid .eq. 0)
+         left_neighbor = mod( myid - 1 + nproc, nproc)
+         right_neighbor = mod( myid + 1, nproc )
+         token = 1.0
+
+         if(iam_root)then
+
+           vc(:, :, :) = vc_mks
+
+           open(unit=43,file='out_orbitrf.coef',  status='old',
+     .          form='formatted', position='append')
+
+           write(43,309) nuper, nupar
+           write(43,3310) (uperp(ni), ni = 1, nuper)
+           write(43,3310) (upara(mi), mi = 1, nupar)
+           write(43,3310) (((vc(i,j,k),i=1,nnodex),j=1,nnodey),
+     .                     k=1,nnodephi)
+
+	   do ip=start,finish
+	      i=i_table(ip)
+	      j=j_table(ip)
+              k=k_table(ip)
+	      do ni=1,nuper
+	        do mi=1,nupar
+		  if(abs(bql_store(ip,ni,mi)) .gt. 10**(-10)) then
+
+		     write(43,102) i, j, k, ni, mi,
+     .                 bql_store(ip,ni,mi), cql_store(ip,ni,mi),
+     .                 eql_store(ip,ni,mi), fql_store(ip,ni,mi)
+	          endif
+		enddo
+	      enddo
+           enddo
+
+	   close(43)
+
+	   call MPI_SEND(token,1, MPI_REAL,right_neighbor,
+     .             2, MPI_COMM_WORLD, ierr)
+           call MPI_RECV(token,1, MPI_REAL,left_neighbor,
+     &             2, MPI_COMM_WORLD, status, ierr)
+         else
+
+           call MPI_RECV(token,1, MPI_REAL,left_neighbor,
+     &             2, MPI_COMM_WORLD, status, ierr)
+
+           open(unit=43,file='out_orbitrf.coef',  status='old',
+     .                    form='formatted', position='append')
+
+	   do ip=start,finish
+	      i=i_table(ip)
+	      j=j_table(ip)
+              k=k_table(ip)
+	      do ni=1,nuper
+	        do mi=1,nupar
+		  if(abs(bql_store(ip,ni,mi)) .gt. 10**(-10)) then
+
+		     write(43,102) i, j, k, ni, mi,
+     .                 bql_store(ip,ni,mi), cql_store(ip,ni,mi),
+     .                 eql_store(ip,ni,mi), fql_store(ip,ni,mi)
+	          endif
+		enddo
+	      enddo
+           enddo
+
+	   close(43)
+
+	   call MPI_SEND(token,1, MPI_REAL,right_neighbor,
+     .             2, MPI_COMM_WORLD, ierr)
+
+         endif
+      endif
+
+      call blacs_barrier(icontxt, 'All')
+
+!     -------------------
+!     Sum over processors
+!     -------------------
+
+      call dgsum2d(icontxt, 'All', ' ', nnodex * nnodey, nnodephi,
+     .     wdot, nnodex * nnodey, -1, -1)
+
+      call dgsum2d(icontxt, 'All', ' ', nnodex * nnodey, nnodephi,
+     .     fx0, nnodex * nnodey, -1, -1)
+
+      call dgsum2d(icontxt, 'All', ' ', nnodex * nnodey, nnodephi,
+     .     fy0, nnodex * nnodey, -1, -1)
+
+      call dgsum2d(icontxt, 'All', ' ', nnodex * nnodey, nnodephi,
+     .     fz0, nnodex * nnodey, -1, -1)
+
+      do n = 1, nnoderho
+
+         do mi = 1, nupar
+            do ni = 1, nuper
+               bqlvol2d(ni, mi) = bqlvol(ni, mi, n)
+               cqlvol2d(ni, mi) = cqlvol(ni, mi, n)
+               eqlvol2d(ni, mi) = eqlvol(ni, mi, n)
+               fqlvol2d(ni, mi) = fqlvol(ni, mi, n)
+            end do
+         end do
+
+         call dgsum2d(icontxt, 'All', ' ', nuper, nupar, bqlvol2d,
+     .      nuper, -1, -1)
+         call dgsum2d(icontxt, 'All', ' ', nuper, nupar, cqlvol2d,
+     .      nuper, -1, -1)
+         call dgsum2d(icontxt, 'All', ' ', nuper, nupar, eqlvol2d,
+     .      nuper, -1, -1)
+         call dgsum2d(icontxt, 'All', ' ', nuper, nupar, fqlvol2d,
+     .      nuper, -1, -1)
+
+
+
+
+         do mi = 1, nupar
+            do ni = 1, nuper
+               bqlvol(ni, mi, n) = bqlvol2d(ni, mi)
+               cqlvol(ni, mi, n) = cqlvol2d(ni, mi)
+               eqlvol(ni, mi, n) = eqlvol2d(ni, mi)
+               fqlvol(ni, mi, n) = fqlvol2d(ni, mi)
+            end do
+         end do
+
+
+      end do
+
+
+*     ------------------------------------
+*     Divide by volume element (passed in)
+*     ------------------------------------
+      do n = 1, nnoderho
+         do mi = 1, nupar
+            do ni = 1, nuper
+
+*           --------------
+*           bounce average
+*           --------------
+            if (vol(n) .ne. 0.0)then
+            bqlavg(ni, mi, n) = bqlvol(ni, mi, n) / vol(n) * dldbavg(n)
+            cqlavg(ni, mi, n) = cqlvol(ni, mi, n) / vol(n) * dldbavg(n)
+            eqlavg(ni, mi, n) = eqlvol(ni, mi, n) / vol(n) * dldbavg(n)
+            fqlavg(ni, mi, n) = fqlvol(ni, mi, n) / vol(n) * dldbavg(n)
+	    end if
+
+	    if (bqlavg(ni, mi, n) .lt. 0.0)bqlavg(ni, mi, n) = 0.0
+c	    if (cqlavg(ni, mi, n) .lt. 0.0)cqlavg(ni, mi, n) = 0.0
+c	    if (eqlavg(ni, mi, n) .lt. 0.0)eqlavg(ni, mi, n) = 0.0
+	    if (fqlavg(ni, mi, n) .lt. 0.0)fqlavg(ni, mi, n) = 0.0
+
+            end do
+         end do
+      end do
+
+      deallocate( dfduper0 )
+      deallocate( dfdupar0 )
+
+
+      deallocate(b_sum)
+      deallocate(c_sum)
+      deallocate(e_sum)
+      deallocate(f_sum)
+
+      deallocate(wdot_sum)
+      deallocate(sum_fx0)
+      deallocate(sum_fy0)
+
+      deallocate(bqlvol)
+      deallocate(bqlvol2d)
+
+      deallocate(cqlvol)
+      deallocate(cqlvol2d)
+
+      deallocate(eqlvol)
+      deallocate(eqlvol2d)
+
+      deallocate(fqlvol)
+      deallocate(fqlvol2d)
+
+      if(i_write.ne.0) then
+         deallocate(bql_store, cql_store, eql_store,  fql_store)
+         deallocate(vc)
+      endif
+
+      wdot_inout(1:nnodex,1:nnodey,1:nnodephi)
+     .     = wdot(1:nnodex,1:nnodey,1:nnodephi)
+      fx0_inout(1:nnodex,1:nnodey,1:nnodephi)
+     .     = fx0(1:nnodex,1:nnodey,1:nnodephi)
+      fy0_inout(1:nnodex,1:nnodey,1:nnodephi)
+     .     = fy0(1:nnodex,1:nnodey,1:nnodephi)
+      fz0_inout(1:nnodex,1:nnodey,1:nnodephi)
+     .     = fz0(1:nnodex,1:nnodey,1:nnodephi)
+
+!      if (myid .eq. 0)then
+!         sum_count = 0.0
+!         do n = 0, 5000
+!            write(43, 101)n, count(n, 1)
+!	    sum_count = sum_count + count(n, 1)
+!         end do
+!	 write(43, *)"sum_count = ", sum_count
+!      end if
+
+      return
+
+ 1311 format(1p9e12.4)
+  100 format (1p8e12.4)
+  101 format (1i6, 1p8e12.4)
+  102 format (5i6, 1p8e12.4)
+  309 format(10i10)
+ 3310 format(1p6e18.10)
+
+      end subroutine ql_myra_write
+
+
+c
+c***************************************************************************
+c
+
+
+      subroutine wdot_qlcheck(wdot_check,
+     .   nnoderho, nrhodim,
+     .   bqlavg, cqlavg, xm, omgrf, xktavg, ndist,
+     .   nupar, nuper, n_psi,
+     .   n_psi_dim, dfduper, dfdupar,
+     .   UminPara_cql, UmaxPara_cql, UPERP_cql, UPARA_cql, UPERP, UPARA,
+     .   vc_mks_cql, df_cql_uprp, df_cql_uprl, rhon, rho_a,
+     .   dldbavg)
+
+*     ------------------------------------------------------------------
+*     This subroutine calculates the flux averaged wdot for checking QL
+*     ------------------------------------------------------------------
+
+      implicit none
+
+
+      integer nnoderho, nrhodim, n, m, ndist
+      real bqlavg(nuper, nupar, nnoderho)
+      real cqlavg(nuper, nupar, nnoderho)
+      real xktavg(nrhodim), alpha, e
+      real ans, xm, omgrf
+      real, dimension(:,:), allocatable :: wdot_int
+      real wdot_check(nrhodim), rhon(nrhodim)
+      real dldbavg(nrhodim)
+
+      integer  :: n_psi_dim, nuper, nupar, n_psi, mi0, ni0
+
+      real :: UPERP(NUPER), UPARA(NUPAR)
+      real :: UPERP_cql(NUPER), UPARA_cql(NUPAR)
+      real :: DFDUPER(NUPER,NUPAR),DFDUPAR(NUPER,NUPAR)
+      real :: DFDUPER0, DFDUPAR0
+      real :: W, ENORM
+      real :: UminPara,UmaxPara
+      real :: UminPara_cql,UmaxPara_cql
+
+      real :: df_cql_uprp(NUPER, NUPAR, n_psi_dim)
+      real :: df_cql_uprl(NUPER, NUPAR, n_psi_dim)
+
+
+      real :: vc_mks, vc_mks_cql, rho_a(n_psi_dim)
+      real :: eps0, pi, emax, u0, dfdu0, dfdth0, u_0
+
+      parameter (eps0 = 8.85e-12)
+      parameter (PI = 3.141592653597932384)
+
+      allocate(wdot_int(nuper, nupar) )
+
+!     ------------------------------------
+!efd  initialize allocatable array to zero
+!     ------------------------------------
+
+      wdot_int = 0.0
+
+
+
+      e = 1.6e-19
+      W = omgrf
+
+      if(ndist .eq. 0)then   !--Maxwellian--!
+
+         do n = 1, NUPER
+            UPERP(n) = (real(n-1)/real(NUPER-1))
+         end do
+
+         UminPara = -1.0
+         UmaxPara =  1.0
+
+         do m = 1, NUPAR
+            UPARA(m) = (-1.0 + 2. * (real(m-1) / real(NUPAR-1)))
+         end do
+
+      else   !--non-Maxwellian--!
+
+         vc_mks = vc_mks_cql
+         UminPara = UminPara_cql
+         UmaxPara = UmaxPara_cql
+
+         do n = 1, nuper
+            uperp(n) = uperp_cql(n)
+         end do
+
+         do m = 1, nupar
+            upara(m) = upara_cql(m)
+         end do
+
+      end if
+
+
+*     -------------------
+*     Loop over rho mesh:
+*     -------------------
+
+      do n = 1, nnoderho
+
+         alpha = sqrt(2.0 * xktavg(n) / xm)
+         if (ndist .eq. 0) vc_mks =  3.0 * alpha    !--Maxwellian only--!
+         u0 = vc_mks / alpha
+
+         Emax = 0.5 * xm * vc_mks**2
+         Enorm = Emax / 1.6e-19
+
+!        ------------------------------------------------
+!        get CQL3D distribution function on the midplane
+!        ------------------------------------------------
+
+         if(ndist .eq. 0)then   !--Maxwellian--!
+
+            call maxwell_dist(u0, NUPAR, NUPER,
+     .                 UminPara, UmaxPara,
+     .                 UPERP, UPARA, DFDUPER, DFDUPAR)
+
+         else   !--non-Maxwellian--!
+
+            call cql3d_dist(nupar, nuper, n_psi,
+     .                 n_psi_dim, rho_a, rhon(n),
+     .                 UminPara,UmaxPara,
+     .                 df_cql_uprp, df_cql_uprl,
+     .                 UPERP, UPARA, DFDUPER, DFDUPAR)
+
+
+
+         end if
+
+!        -----------------------------
+!        loop over MIDPLANE velocities
+!        -----------------------------
+
+         do ni0 = 1, nuper
+            do mi0 = 1, nupar
+
+               dfdupar0 = dfdupar(ni0, mi0)
+               dfduper0 = dfduper(ni0, mi0)
+
+               u_0 = sqrt(uperp(ni0)**2 + upara(mi0)**2)
+               if (u_0 .eq. 0.0) u_0 = 1.0e-08
+
+               dfdu0 = (uperp(ni0) * dfduper0 + upara(mi0) * dfdupar0)
+     .                / u_0
+               dfdth0 = upara(mi0) * dfduper0 - uperp(ni0) * dfdupar0
+
+               wdot_int(ni0, mi0) = (bqlavg(ni0, mi0, n) * dfdu0
+     .                             + cqlavg(ni0, mi0, n) * dfdth0) / u_0
+
+            end do
+         end do
+
+
+
+!        ---------------------------------------------------
+!        Do velocity space integral over midplane velocities
+!        ---------------------------------------------------
+
+         wdot_check(n) = 0.0
+
+
+         call ugrate(wdot_int, uperp, upara, nuper, nupar, ans)
+
+
+         wdot_check(n) = - 4.0 * pi * e * enorm / dldbavg(n) * ans
+
+
+      end do
+
+
+      deallocate(wdot_int)
+
+
+      return
+
+ 1311 format(1p9e12.4)
+ 1312 format(i10, 1p9e12.4)
+ 1313 format(2i10, 1p9e12.4)
+  100 format (1p8e12.4)
+  101 format (2i10, 1p8e12.4)
+
+      end subroutine
+
+
+c
+c***************************************************************************
+c
+
+
+
+      subroutine ugrate(f, uperp, upara, nuper, nupar, fint)
+
+      implicit none
+
+      integer nuper, nupar, ni, mi
+
+      real uperp(nuper), upara(nupar), f(nuper, nupar)
+      real favg, fint, duperp, dupara
+
+      duperp = (uperp(nuper) - uperp(1)) / (nuper - 1)
+      dupara = (upara(nupar) - upara(1)) / (nupar - 1)
+
+      fint = 0.0
+
+      do ni = 1, nuper - 1
+         do mi = 1, nupar - 1
+            favg = (f(ni, mi)   + f(ni+1, mi)
+     .            + f(ni, mi+1) + f(ni+1, mi+1)) / 4.0
+
+            fint = fint + favg * uperp(ni) * duperp * dupara
+         end do
+      end do
+
+ 1313 format(2i10, 1p9e12.4)
+
+      return
+      end subroutine  ugrate
+
+c
+c***************************************************************************
+c
+
+       end module ql_myra_mod
